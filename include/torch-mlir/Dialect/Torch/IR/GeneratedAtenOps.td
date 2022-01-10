@@ -1525,6 +1525,26 @@ def Torch_AtenMaxPool2dOp : Torch_Op<"aten.max_pool2d", [
   let assemblyFormat = "$self `,` $kernel_size `,` $stride `,` $padding `,` $dilation `,` $ceil_mode attr-dict `:` type($self) `,` type($kernel_size) `,` type($stride) `,` type($padding) `,` type($dilation) `,` type($ceil_mode) `->` type($result)";
 }
 
+def Torch_AtenMaxPool2dWithIndicesOp : Torch_Op<"aten.max_pool2d_with_indices", [
+    AllowsTypeRefinement,
+    HasValueSemantics
+  ]> {
+  let summary = "Generated op for `aten::max_pool2d_with_indices : (Tensor, int[], int[], int[], int[], bool) -> (Tensor, Tensor)`";
+  let arguments = (ins
+    AnyTorchTensorType:$self,
+    TorchIntListType:$kernel_size,
+    TorchIntListType:$stride,
+    TorchIntListType:$padding,
+    TorchIntListType:$dilation,
+    Torch_BoolType:$ceil_mode
+  );
+  let results = (outs
+    AnyTorchTensorType:$result0,
+    AnyTorchTensorType:$result1
+  );
+  let assemblyFormat = "$self `,` $kernel_size `,` $stride `,` $padding `,` $dilation `,` $ceil_mode attr-dict `:` type($self) `,` type($kernel_size) `,` type($stride) `,` type($padding) `,` type($dilation) `,` type($ceil_mode) `->` type($result0) `,` type($result1)";
+}
+
 def Torch_AtenSoftmaxIntOp : Torch_Op<"aten.softmax.int", [
     AllowsTypeRefinement,
     HasValueSemantics

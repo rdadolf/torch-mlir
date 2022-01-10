@@ -1014,3 +1014,67 @@ class ReturnTwoTensorF32I64(torch.nn.Module):
 @register_test_case(module_factory=lambda: ReturnTwoTensorF32I64())
 def ReturnTwoTensorF32I64_basic(module, tu: TestUtils):
     module.forward(tu.rand(2, 3), torch.randint(5, (2, 3)))
+
+# ==============================================================================
+
+class MaxPool2dWithIndicesModule(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+
+    @export
+    @annotate_args([
+        None,
+        ([-1, -1, -1, -1], torch.float32, True),
+    ])
+    def forward(self, x):
+        return torch.ops.aten.max_pool2d_with_indices(x,
+                                                      kernel_size=[6, 8],
+                                                      stride=[2, 2],
+                                                      padding=[3, 4],
+                                                      dilation=2)
+
+@register_test_case(module_factory=lambda: MaxPool2dWithIndicesModule())
+def MaxPool2dWithIndicesModule_basic(module, tu: TestUtils):
+    module.forward(tu.rand(2, 4, 6, 8, low=0.5, high=1.0))
+
+
+class MaxPool2dWithIndicesPadding1dModule(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+
+    @export
+    @annotate_args([
+        None,
+        ([-1, -1, -1, -1], torch.float32, True),
+    ])
+    def forward(self, x):
+        return torch.ops.aten.max_pool2d_with_indices(x,
+                                                      kernel_size=[4,4],
+                                                      stride=[2, 2],
+                                                      padding=1,
+                                                      dilation=2)
+
+@register_test_case(module_factory=lambda: MaxPool2dWithIndicesPadding1dModule())
+def MaxPool2dWithIndicesPadding1dModule_basic(module, tu: TestUtils):
+    module.forward(tu.rand(2, 4, 6, 8, low=-1.5, high=1.0))
+
+
+class MaxPool2dWithIndicesStride1dModule(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+
+    @export
+    @annotate_args([
+        None,
+        ([-1, -1, -1, -1], torch.float32, True),
+    ])
+    def forward(self, x):
+        return torch.ops.aten.max_pool2d_with_indices(x,
+                                                      kernel_size=[4,4],
+                                                      stride=2,
+                                                      padding=1,
+                                                      dilation=2)
+
+@register_test_case(module_factory=lambda: MaxPool2dWithIndicesStride1dModule())
+def MaxPool2dWithIndicesStride1dModule_basic(module, tu: TestUtils):
+    module.forward(tu.rand(1, 4, 6, 8, low=0.5, high=2.0))

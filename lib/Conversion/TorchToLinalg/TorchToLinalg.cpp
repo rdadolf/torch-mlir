@@ -2584,6 +2584,90 @@ struct ConvertReductionOp : ConversionPattern {
 };
 } // namespace
 
+// Computes maxpool2d for AtenMaxPool2dOp and AtenMaxPool2dWithIndicesOp.
+template <typename OpTy>
+static LogicalResult computeMaxPool2d(OpTy op,
+                                      ConversionPatternRewriter &rewriter,
+                                      Value self, Value &result) {
+  Location loc = op.getLoc();
+  Value ceilMode = op.ceil_mode();
+  Type elementType = self.getType().cast<RankedTensorType>().getElementType();
+  if (!elementType.isa<mlir::FloatType>())
+    return op.emitError("unimplemented: non-floating point type");
+
+  // Pattern match against the op's original operands, because otherwise we
+  // will get the lowered version of the operands which is harder to pattern
+  // match.
+  SmallVector<int64_t, 2> strideInts;
+  if (!matchPattern(op.stride(), m_TorchConstantIntList(strideInts)))
+    return rewriter.notifyMatchFailure(op, "only support constant int strides");
+  SmallVector<int64_t, 2> dilationInts;
+  if (!matchPattern(op.dilation(), m_TorchConstantIntList(dilationInts)))
+    return rewriter.notifyMatchFailure(op,
+                                       "only support constant int dilations");
+  SmallVector<int64_t, 2> paddingInts;
+  if (!matchPattern(op.padding(), m_TorchConstantIntList(paddingInts)))
+    return rewriter.notifyMatchFailure(op,
+                                       "only support constant int paddings");
+  SmallVector<int64_t, 2> kernelSizeInts;
+  if (!matchPattern(op.kernel_size(), m_TorchConstantIntList(kernelSizeInts)))
+    return rewriter.notifyMatchFailure(op, "only support kernel size ints");
+  bool ceilModeFalse = false;
+  if (!matchPattern(op.ceil_mode(), m_TorchConstantBool(&ceilModeFalse)))
+    return rewriter.notifyMatchFailure(op, "only ceil_mode false is supported");
+
+  SmallVector<int64_t, 4> paddingIncludingNC = {0, 0};
+  paddingIncludingNC.insert(paddingIncludingNC.end(), paddingInts.begin(),
+                            paddingInts.end());
+  Value paddedInput = getPaddedTensor(op, rewriter, self, paddingIncludingNC);
+
+  Value N = getDimOp(rewriter, loc, self, 0);
+  Value C = getDimOp(rewriter, loc, self, 1);
+  Value H = getDimOp(rewriter, loc, self, 2);
+  Value W = getDimOp(rewriter, loc, self, 3);
+
+  SmallVector<Value> paddingIntValues =
+      getAsConstantIntValues(rewriter, loc, paddingInts);
+  SmallVector<Value> dilationIntValues =
+      getAsConstantIntValues(rewriter, loc, dilationInts);
+  SmallVector<Value> kernelSizeIntValues =
+      getAsConstantIntValues(rewriter, loc, kernelSizeInts);
+  SmallVector<Value> strideIntValues =
+      getAsConstantIntValues(rewriter, loc, strideInts);
+
+  Value Hout = getOutputDimForConvOps(
+      rewriter, loc, H, paddingIntValues[0], dilationIntValues[0],
+      kernelSizeIntValues[0], strideIntValues[0]);
+  Value Wout = getOutputDimForConvOps(
+      rewriter, loc, W, paddingIntValues[1], dilationIntValues[1],
+      kernelSizeIntValues[1], strideIntValues[1]);
+
+  // Initialize output tensor with smallest floating point value
+  Value outTensor = rewriter.create<linalg::InitTensorOp>(
+      loc, ValueRange{N, C, Hout, Wout}, elementType);
+  auto initialAttr = rewriter.getFloatAttr(
+      elementType, APFloat::getSmallest(
+                       elementType.cast<mlir::FloatType>().getFloatSemantics(),
+                       /*Negative*/ true));
+  Value initValue = rewriter.create<arith::ConstantOp>(loc, initialAttr);
+  Value outTensorInitialized =
+      rewriter.create<linalg::FillOp>(loc, initValue, outTensor).getResult(0);
+
+  auto stridesAttr = rewriter.getI64VectorAttr(strideInts);
+  auto dilationAttr = rewriter.getI64VectorAttr(dilationInts);
+  Value windowTensor = rewriter.create<linalg::InitTensorOp>(
+      loc, getAsConstantIndexValues(rewriter, loc, kernelSizeInts),
+      elementType);
+
+  result = rewriter
+               .create<linalg::PoolingNchwMaxOp>(
+                   loc, outTensorInitialized.getType(),
+                   ValueRange{paddedInput, windowTensor}, outTensorInitialized,
+                   stridesAttr, dilationAttr)
+               .getResult(0);
+  return success();
+}
+
 namespace {
 class ConvertAtenMaxPool2dOp : public OpConversionPattern<AtenMaxPool2dOp> {
 public:
@@ -2593,93 +2677,116 @@ public:
                   ConversionPatternRewriter &rewriter) const override {
     if (failed(verifyLinalgCompatibleTypes(op, rewriter)))
       return failure();
-    Location loc = op->getLoc();
+
     Value self = adaptor.self();
-    Value ceilMode = adaptor.ceil_mode();
-
-    Type elementType = self.getType().cast<RankedTensorType>().getElementType();
-    if (!elementType.isa<mlir::FloatType>())
-      return op.emitError("unimplemented: non-floating point type");
-
-    // Pattern match against the op's original operands, because otherwise we
-    // will get the lowered version of the operands which is harder to pattern
-    // match.
-    SmallVector<int64_t, 2> strideInts;
-    if (!matchPattern(op.stride(), m_TorchConstantIntList(strideInts)))
-      return rewriter.notifyMatchFailure(op,
-                                         "only support constant int strides");
-    SmallVector<int64_t, 2> dilationInts;
-    if (!matchPattern(op.dilation(), m_TorchConstantIntList(dilationInts)))
-      return rewriter.notifyMatchFailure(op,
-                                         "only support constant int dilations");
-    SmallVector<int64_t, 2> paddingInts;
-    if (!matchPattern(op.padding(), m_TorchConstantIntList(paddingInts)))
-      return rewriter.notifyMatchFailure(op,
-                                         "only support constant int paddings");
-    SmallVector<int64_t, 2> kernelSizeInts;
-    if (!matchPattern(op.kernel_size(), m_TorchConstantIntList(kernelSizeInts)))
-      return rewriter.notifyMatchFailure(op, "only support kernel size ints");
-
-    Value falseValue = rewriter.create<arith::ConstantOp>(
-        loc, IntegerAttr::get(rewriter.getIntegerType(1), 0));
-    Value ceilModeFalse = rewriter.create<arith::CmpIOp>(
-        loc, arith::CmpIPredicate::eq, ceilMode, falseValue);
-    rewriter.create<AssertOp>(
-        loc, ceilModeFalse,
-        rewriter.getStringAttr("only ceil_mode false is supported"));
-
-    SmallVector<int64_t, 4> paddingIncludingNC = {0, 0};
-    paddingIncludingNC.insert(paddingIncludingNC.end(), paddingInts.begin(),
-                              paddingInts.end());
-    Value paddedInput = getPaddedTensor(op, rewriter, self, paddingIncludingNC);
-
-    Value N = getDimOp(rewriter, loc, self, 0);
-    Value C = getDimOp(rewriter, loc, self, 1);
-    Value H = getDimOp(rewriter, loc, self, 2);
-    Value W = getDimOp(rewriter, loc, self, 3);
-
-    SmallVector<Value> paddingIntValues =
-        getAsConstantIntValues(rewriter, loc, paddingInts);
-    SmallVector<Value> dilationIntValues =
-        getAsConstantIntValues(rewriter, loc, dilationInts);
-    SmallVector<Value> kernelSizeIntValues =
-        getAsConstantIntValues(rewriter, loc, kernelSizeInts);
-    SmallVector<Value> strideIntValues =
-        getAsConstantIntValues(rewriter, loc, strideInts);
-
-    Value Hout = getOutputDimForConvOps(
-        rewriter, loc, H, paddingIntValues[0], dilationIntValues[0],
-        kernelSizeIntValues[0], strideIntValues[0]);
-    Value Wout = getOutputDimForConvOps(
-        rewriter, loc, W, paddingIntValues[1], dilationIntValues[1],
-        kernelSizeIntValues[1], strideIntValues[1]);
-
-    // Initialize output tensor with smallest floating point value
-    Value outTensor = rewriter.create<linalg::InitTensorOp>(
-        loc, ValueRange{N, C, Hout, Wout}, elementType);
-    auto initialAttr = rewriter.getFloatAttr(
-        elementType,
-        APFloat::getSmallest(
-            elementType.cast<mlir::FloatType>().getFloatSemantics(),
-            /*Negative*/ true));
-    Value initValue = rewriter.create<arith::ConstantOp>(loc, initialAttr);
-    Value outTensorInitialized =
-        rewriter.create<linalg::FillOp>(loc, initValue, outTensor).getResult(0);
-
-    auto stridesAttr = rewriter.getI64VectorAttr(strideInts);
-    auto dilationAttr = rewriter.getI64VectorAttr(dilationInts);
-    Value windowTensor = rewriter.create<linalg::InitTensorOp>(
-        loc, getAsConstantIndexValues(rewriter, loc, kernelSizeInts),
-        elementType);
-
-    Value maxPool2d = rewriter
-                          .create<linalg::PoolingNchwMaxOp>(
-                              loc, outTensorInitialized.getType(),
-                              ValueRange{paddedInput, windowTensor},
-                              outTensorInitialized, stridesAttr, dilationAttr)
-                          .getResult(0);
+    Value maxPool2d;
+    if (failed(
+            computeMaxPool2d<AtenMaxPool2dOp>(op, rewriter, self, maxPool2d)))
+      return rewriter.notifyMatchFailure(op, "unable to compute maxpool2d");
     Type newResultType = getTypeConverter()->convertType(op.getType());
     rewriter.replaceOpWithNewOp<tensor::CastOp>(op, newResultType, maxPool2d);
+    return success();
+  }
+};
+} // namespace
+
+namespace {
+// Returns the result of maxpool2d over the input tensor. And the corresponding
+// indices of the input tensor for the values of the result tensor.
+//
+// The result of the maxpool2d operation is calculated using the helper function
+// written above. For finding the indices, we follow the below method:
+//
+// Let's say the input tensor is a 4-d tensor. The maxpool2d and indices will
+// also be a 4-d tensor. Then:
+//  for i in input.size[0]:
+//    for j in input.size[1]:
+//      for k in input.size[2]:
+//        for l in input.size[3]:
+//          for p in maxpool2d.size[1]:
+//            for q in maxpool2d.size[2]:
+//              for r in maxpool2d.size[3]:
+//                if input[i, j, k, l] == maxpool2d[i, p, q, r]:
+//                  indices[i, p, q, r] = (k * input.size[3] + l)
+//
+class ConvertAtenMaxPool2dWithIndicesOp
+    : public OpConversionPattern<AtenMaxPool2dWithIndicesOp> {
+public:
+  using OpConversionPattern::OpConversionPattern;
+  LogicalResult
+  matchAndRewrite(AtenMaxPool2dWithIndicesOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    if (failed(verifyLinalgCompatibleTypes(op, rewriter)))
+      return failure();
+    Location loc = op->getLoc();
+    Value self = adaptor.self();
+
+    // Contains the result of maxpool2d operation over the input.
+    Value maxPool2d;
+    if (failed(computeMaxPool2d<AtenMaxPool2dWithIndicesOp>(op, rewriter, self,
+                                                            maxPool2d)))
+      return rewriter.notifyMatchFailure(op, "unable to compute maxpool2d");
+
+    RankedTensorType resultType = getTypeConverter()
+                                      ->convertType(op->getResult(0).getType())
+                                      .cast<RankedTensorType>();
+    RankedTensorType indicesType = getTypeConverter()
+                                       ->convertType(op->getResult(1).getType())
+                                       .cast<RankedTensorType>();
+    unsigned resultRank = resultType.getRank();
+    SmallVector<Value> inputShape(getTensorSizes(rewriter, loc, self));
+    SmallVector<Value> resultShape(getTensorSizes(rewriter, loc, maxPool2d));
+
+    Value indicesTensor = createZeroInitTensor(rewriter, loc, resultShape,
+                                               indicesType.getElementType());
+
+    SmallVector<AffineExpr> inputExprs, maxPoolExprs, indicesExprs;
+    SmallVector<StringRef> iteratorTypes(2 * resultRank - 1,
+                                         getParallelIteratorTypeName());
+    AffineExpr zeroDimExpr = rewriter.getAffineDimExpr(0);
+    inputExprs.push_back(zeroDimExpr);
+    maxPoolExprs.push_back(zeroDimExpr);
+    indicesExprs.push_back(zeroDimExpr);
+
+    for (unsigned i = 1; i < resultRank; i++) {
+      inputExprs.push_back(rewriter.getAffineDimExpr(i));
+      maxPoolExprs.push_back(rewriter.getAffineDimExpr(i + resultRank - 1));
+      indicesExprs.push_back(rewriter.getAffineDimExpr(i + resultRank - 1));
+    }
+
+    auto indexingMaps =
+        AffineMap::inferFromExprList({inputExprs, maxPoolExprs, indicesExprs});
+
+    auto indicesResult =
+        rewriter
+            .create<linalg::GenericOp>(
+                loc, /*resultTensorTypes=*/indicesTensor.getType(),
+                /*inputs=*/ValueRange({self, maxPool2d}),
+                /*outputs=*/indicesTensor,
+                /*indexingMaps=*/indexingMaps,
+                /*iteratorTypes=*/iteratorTypes,
+                [&](OpBuilder &b, Location loc, ValueRange args) {
+                  Value out = args[2];
+                  Value index = b.create<linalg::IndexOp>(loc, resultRank - 2);
+                  index = b.create<arith::MulIOp>(
+                      loc, index, inputShape[resultRank - 2 + 1]);
+                  index = b.create<arith::AddIOp>(
+                      loc, index,
+                      b.create<linalg::IndexOp>(loc, resultRank - 1));
+                  index = castIndexToInt(b, loc, index);
+                  Value predicate;
+                  if (resultType.getElementType().isa<mlir::FloatType>())
+                    predicate = b.create<arith::CmpFOp>(
+                        loc, arith::CmpFPredicate::OEQ, args[0], args[1]);
+                  else
+                    predicate = b.create<arith::CmpIOp>(
+                        loc, arith::CmpIPredicate::eq, args[0], args[1]);
+
+                  Value result = b.create<SelectOp>(loc, predicate, index, out);
+                  b.create<linalg::YieldOp>(loc, result);
+                })
+            .getResult(0);
+    rewriter.replaceOp(op, {maxPool2d, indicesResult});
     return success();
   }
 };
@@ -4225,6 +4332,8 @@ public:
     patterns.add<ConvertAtenViewOp>(typeConverter, context);
     target.addIllegalOp<AtenMaxPool2dOp>();
     patterns.add<ConvertAtenMaxPool2dOp>(typeConverter, context);
+    target.addIllegalOp<AtenMaxPool2dWithIndicesOp>();
+    patterns.add<ConvertAtenMaxPool2dWithIndicesOp>(typeConverter, context);
     target.addIllegalOp<AtenSumOp>();
     patterns.add<ConvertReductionOp>(typeConverter, context);
     target.addIllegalOp<AtenTransposeIntOp>();
