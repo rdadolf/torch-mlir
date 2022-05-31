@@ -1,4 +1,5 @@
 add_mlir_conversion_library(TorchMLIRTorchToLinalg
+  Custom.cpp
   DataMovement.cpp
   IndirectDataMovement.cpp
   Linear.cpp
