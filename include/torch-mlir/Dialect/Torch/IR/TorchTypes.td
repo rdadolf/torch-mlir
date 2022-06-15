@@ -63,12 +63,13 @@ class AnyTorchTensorType<string name, string typeMnemonic>
 
     ```
     tensor-type ::= (`!torch.tensor` | `!torch.vtensor`) tensor-modifiers?
-    tensor-modifiers ::= `<` sizes-spec `,` dtype-spec `>`
+    tensor-modifiers ::= `<` sizes-spec `,` dtype-spec (',' encoding)? `>`
     sizes-spec ::= `*` | `[` size-list `]`
     size-list ::= /*empty*/ | size-list-nonempty
     size-list-nonempty = size (`,` size)*
     size ::= `?` | decimal-literal
     dtype-spec ::= `unk` | type
+    encoding ::= attribute-value
     ```
 
     Represents a multi-dimensional array to model Torch's `torch.Tensor` type.
@@ -133,6 +134,12 @@ class AnyTorchTensorType<string name, string typeMnemonic>
     |-------------------|--------------------|
     ```
 
+    *Experimental: tensor encodings*
+
+    Torch supports alternative tensor encodings, as does the downstream MLIR
+    infrastructure. This optional attribute to tensors allows torch tensors to
+    be given a specific encoding.
+
     TODO: Support the full set of Torch dtypes.
     TODO: Use si1?
 
@@ -149,8 +156,19 @@ class AnyTorchTensorType<string name, string typeMnemonic>
   }];
   let parameters = (ins
     OptionalArrayRefParameter<"int64_t", "sizes of dimensions">:$optionalSizes,
-    "::mlir::Type":$optionalDtype
+    "::mlir::Type":$optionalDtype,
+    "Attribute":$optionalEncoding
   );
+  let builders = [
+    TypeBuilder<(ins
+      "Optional<ArrayRef<int64_t>>":$optionalSizes,
+      "::mlir::Type":$optionalDtype,
+      CArg<"Attribute", "{}">:$optionalEncoding
+    ), [{
+      return $_get(context, optionalSizes, optionalDtype, optionalEncoding);
+    }]>
+  ];
+  let skipDefaultBuilders = 1;
   let genVerifyDecl = 1;
   let hasCustomAssemblyFormat = 1;
   string extraBaseClassDeclaration = [{

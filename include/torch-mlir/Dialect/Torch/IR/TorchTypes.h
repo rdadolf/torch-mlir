@@ -53,6 +53,9 @@ public:
   /// convenient API.
   Type getOptionalDtype() const;
 
+  /// Get the raw optional encoding attribute of this tensor type.
+  Attribute getOptionalEncoding() const;
+
   /// Return true if this type has a list of sizes.
   bool hasSizes() const { return getOptionalSizes().hasValue(); }
 
@@ -78,11 +81,21 @@ public:
     return getOptionalDtype();
   }
 
+  /// Return true if this type has an encoding attribute.
+  bool hasEncoding() const { return static_cast<bool>(getOptionalEncoding()); }
+
+  /// Get the encoding. Requires `hasEncoding()`.
+  Attribute getEncoding() const {
+    assert(hasEncoding() && "must have an encoding");
+    return getOptionalEncoding();
+  }
+
   /// Enable isa/dyn_cast for BaseTensorType.
   static bool classof(Type type);
 
   /// Return true if this type has the same sizes and dtype as the other.
   bool hasSameSizesAndDtype(BaseTensorType other) const;
+  // [RDA] FIXME: replace with ...AndEncoding?
 
   /// Return a type of the same kind as this one, but with sizes and dtype
   /// from `other`.
@@ -92,6 +105,9 @@ public:
   /// sizes and raw optional dtype.
   Type getWithSizesAndDtype(Optional<ArrayRef<int64_t>> optionalSizes,
                             Type optionalDtype) const;
+
+  /// Return a type of the same kind as this one, but with given encoding.
+  Type getWithEncoding(Attribute encoding) const;
 
   /// Return a type with the same shape and dtype as this one, but with
   /// value semantics.

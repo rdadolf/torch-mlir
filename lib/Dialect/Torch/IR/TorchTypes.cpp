@@ -318,7 +318,9 @@ NonValueTensorType::getWithLeastStaticInformation(MLIRContext *context) {
 LogicalResult
 NonValueTensorType::verify(function_ref<InFlightDiagnostic()> emitError,
                            Optional<ArrayRef<int64_t>> optionalSizes,
-                           Type optionalDtype) {
+                           Type optionalDtype,
+                           Attribute optionalEncoding) {
+  // TODO: verify optionalEncoding as well.
   return verifyTensorType(emitError, optionalSizes, optionalDtype);
 }
 
@@ -379,7 +381,9 @@ TensorType ValueTensorType::toBuiltinTensor() const {
 LogicalResult
 ValueTensorType::verify(function_ref<InFlightDiagnostic()> emitError,
                         Optional<ArrayRef<int64_t>> optionalSizes,
-                        Type optionalDtype) {
+                        Type optionalDtype,
+                        Attribute optionalEncoding) {
+  // TODO: verify optionalEncoding as well.
   return verifyTensorType(emitError, optionalSizes, optionalDtype);
 }
 
