@@ -114,6 +114,7 @@ private:
                     const MethodAnnotation &methodAnnotation);
   void importClassType(c10::ClassType *classType);
   void importCompilationUnit(torch::jit::CompilationUnit *cu);
+  bool isAliased(const c10::IValue &ivalue);
 
   MlirBlock importBlock;
   MlirContext context;
@@ -131,7 +132,8 @@ private:
   torch::jit::CompilationUnit *compilationUnit = nullptr;
 
   // Used to detect potentially aliasing tensors.
-  std::unordered_set<c10::StorageImpl *> seenStorageImpls;
+  c10::IValue::HashAliasedIValues seenIValues;
+
   // The set of ClassType's that have already been imported.
   //
   // ClassType's are referenced via their `classType->name()->qualifiedName()`
@@ -216,19 +218,15 @@ MlirValue IValueImporter::importIValue(c10::IValue ivalue) {
     return it->second;
   }
   // Reject potentially aliased tensors.
-  if (ivalue.isTensor()) {
-    c10::StorageImpl *storageImpl =
-        ivalue.toTensor().storage().unsafeGetStorageImpl();
-    if (!seenStorageImpls.insert(storageImpl).second) {
-      std::stringstream msg;
-      msg << "Unhandled tensor that shares storage with another tensor.";
-      if (rootModuleName) {
-        msg << "\nFound at path '<root>."
-            << c10::QualifiedName(attributeNameStack).qualifiedName()
-            << "' from root object '" << *rootModuleName << "'";
-      }
-      throw std::invalid_argument(msg.str());
+  if (ivalue.isTensor() && isAliased(ivalue)) {
+    std::stringstream msg;
+    msg << "Unhandled tensor that shares storage with another tensor.";
+    if (rootModuleName) {
+      msg << "\nFound at path '<root>."
+          << c10::QualifiedName(attributeNameStack).qualifiedName()
+          << "' from root object '" << *rootModuleName << "'";
     }
+    throw std::invalid_argument(msg.str());
   }
   MlirValue value = rawImportIValue(ivalue);
   valueMap[ivalue] = value;
@@ -567,3 +565,13 @@ MlirValue torch_mlir::importIValue(c10::IValue ivalue, MlirBlock block,
   IValueImporter importer(block, context, annotator);
   return importer.importIValue(ivalue);
 }
+
+// Alias detection for tensors
+bool IValueImporter::isAliased(const c10::IValue &lhs) {
+  for (const c10::IValue &rhs : seenIValues)
+    if (lhs.overlaps(rhs))
+      return true;
+  seenIValues.insert(lhs);
+  return false;
+}
+
