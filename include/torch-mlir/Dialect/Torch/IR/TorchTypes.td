@@ -168,6 +168,8 @@ class AnyTorchTensorType<string name, string typeMnemonic>
       return $_get(context, optionalSizes, optionalDtype, optionalEncoding);
     }]>
   ];
+  // FIXME: Replace once genVerifyDecl has been updated to handle
+  //        custom builder arguments (we need attributes to be CArg'd).
   let skipDefaultBuilders = 1;
   let genVerifyDecl = 1;
   let hasCustomAssemblyFormat = 1;

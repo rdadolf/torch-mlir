@@ -356,51 +356,67 @@ MlirValue IValueImporter::rawImportIValue(c10::IValue ivalue) {
 
 MlirValue IValueImporter::importTensor(c10::IValue ivalue) {
   assert(ivalue.isTensor() && "expected a tensor!");
+  at::Tensor tensor = ivalue.toTensor();
 
   // TODO: Can we do better?
   MlirLocation loc = mlirLocationUnknownGet(context);
 
-  // Import the bulk tensor representation.
-  at::Tensor tensor = ivalue.toTensor().contiguous();
-  MlirAttribute denseElements = convertTensorToMlirElementsAttr(tensor, loc);
+  MlirValue tensorValue;
+  // Grab the literal value. Depending on the tensor, this has to be
+  // done differently.
+  //  - Sparse tensors need to be constructed based on layout.
+  //  - Quantized tensors need post-processing to convert its elements.
+  //  - Basic dense tensors can be grabbed directly from a contiguous data_ptr.
+  // Some of these are offloaded to utility methods.
 
+  if (tensor.is_sparse() || tensor.is_sparse_csr()) {
+    MlirAttribute sparseElements;
+    if (tensor.is_sparse_csr())
+      sparseElements = convertSparseCSRTensorToMlirElementsAttr(tensor, loc);
+    else
+      sparseElements = convertSparseCOOTensorToMlirElementsAttr(tensor, loc);
+
+    MlirOperation tensorOp = createMlirOperationAtEnd(
+      importBlock, "torch.tensor.literal", loc,
+      torchMlirTorchNonValueTensorTypeGetFromAttribute(sparseElements),
+      toMlirNamedAttribute("value", sparseElements));
+    tensorValue = mlirOperationGetResult(tensorOp, 0);
+
+    return tensorValue;
+  }
+
+  MlirAttribute denseElements = convertTensorToMlirElementsAttr(tensor, loc);
   MlirOperation tensorOp = createMlirOperationAtEnd(
       importBlock, "torch.tensor.literal", loc,
       torchMlirTorchNonValueTensorTypeGetFromAttribute(denseElements),
       toMlirNamedAttribute("value", denseElements));
-  MlirValue tensorReprValue = mlirOperationGetResult(tensorOp, 0);
+  tensorValue = mlirOperationGetResult(tensorOp, 0);
 
-  // Construct the complete tensor value. This is trivial for most tensors, but
-  // for quantized tensors (and probably sparse too, TBD) there is more for us
-  // to do.
-  MlirValue tensorValue;
-  if (tensor.is_quantized()) {
-    // Note that Torch models quantization in a type-erased way. So we don't
-    // make an effort here to do any special static modeling. If desired, later
-    // compiler stages that are building a statically modeled quantization
-    // representation will need to convert this to their representation.
-    std::vector<int64_t> shape(tensor.sizes().begin(), tensor.sizes().end());
-    MlirType quantizedTensorType = torchMlirTorchNonValueTensorTypeGet(
-        context, shape.size(), shape.data(),
-        getMlirTypeForTorchScalarType(loc, tensor.scalar_type()));
-    if (tensor.qscheme() == c10::kPerTensorAffine) {
-      MlirValue qScale = importIValue(c10::IValue(tensor.q_scale()));
-      MlirValue zeroPoint = importIValue(c10::IValue(tensor.q_zero_point()));
-      MlirOperation quantizedTensor = createMlirOperationAtEnd(
-          importBlock, "torch.per_tensor_affine.create", loc,
-          quantizedTensorType, tensorReprValue, qScale, zeroPoint);
-      tensorValue = mlirOperationGetResult(quantizedTensor, 0);
-    } else {
-      std::stringstream msg;
-      msg << "Unsupported quantization scheme '"
-          << c10::toString(tensor.qscheme()) << "' for tensor: " << ivalue;
-      throw std::invalid_argument(msg.str());
-    }
-  } else {
-    tensorValue = tensorReprValue;
+  if (!tensor.is_quantized())
+    return tensorValue;
+
+  // Dense, quantized tensors need post-processing.
+  // Note that Torch models quantization in a type-erased way. So we don't
+  // make an effort here to do any special static modeling. If desired, later
+  // compiler stages that are building a statically modeled quantization
+  // representation will need to convert this to their representation.
+  std::vector<int64_t> shape(tensor.sizes().begin(), tensor.sizes().end());
+  MlirType quantizedTensorType = torchMlirTorchNonValueTensorTypeGet(
+      context, shape.size(), shape.data(),
+      getMlirTypeForTorchScalarType(loc, tensor.scalar_type()));
+  if (tensor.qscheme() == c10::kPerTensorAffine) {
+    MlirValue qScale = importIValue(c10::IValue(tensor.q_scale()));
+    MlirValue zeroPoint = importIValue(c10::IValue(tensor.q_zero_point()));
+    MlirOperation quantizedTensor = createMlirOperationAtEnd(
+        importBlock, "torch.per_tensor_affine.create", loc,
+        quantizedTensorType, tensorValue, qScale, zeroPoint);
+    return mlirOperationGetResult(quantizedTensor, 0);
   }
 
-  return tensorValue;
+  std::stringstream msg;
+  msg << "Unsupported quantization scheme '"
+      << c10::toString(tensor.qscheme()) << "' for tensor: " << ivalue;
+  throw std::invalid_argument(msg.str());
 }
 
 void IValueImporter::importMethod(torch::jit::Function *function,

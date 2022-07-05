@@ -55,6 +55,12 @@ MlirType getFunctionTypeFromSchema(MlirContext context,
 MlirAttribute convertTensorToMlirElementsAttr(at::Tensor tensor,
                                               MlirLocation loc);
 
+MlirAttribute convertSparseCSRTensorToMlirElementsAttr(at::Tensor tensor,
+                                                       MlirLocation loc);
+
+MlirAttribute convertSparseCOOTensorToMlirElementsAttr(at::Tensor tensor,
+                                                       MlirLocation loc);
+
 MlirAttribute importAttribute(MlirLocation loc, torch::jit::Node *node,
                               c10::Symbol symbol);
 

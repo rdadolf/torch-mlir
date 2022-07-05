@@ -24,6 +24,13 @@
 
 using namespace torch_mlir;
 
+
+static void throwUnsupportedTensorError(at::Tensor &tensor) {
+  std::stringstream msg;
+  msg << "Unsupported import tensor type: " << tensor;
+  throw std::invalid_argument(msg.str());
+}
+
 static MlirType getMlirTypeForTorchScalarTypeRaw(MlirContext context,
                                                  c10::ScalarType scalarType) {
   using c10::ScalarType;
@@ -268,12 +275,6 @@ MlirAttribute torch_mlir::convertTensorToMlirElementsAttr(at::Tensor tensor,
                                                           MlirLocation loc) {
   using at::ScalarType;
 
-  auto throwUnsupportedTensorError = [&]() {
-    std::stringstream msg;
-    msg << "Unsupported import tensor type: " << tensor;
-    throw std::invalid_argument(msg.str());
-  };
-
   // Get a C-contiguous form as we can bulk-load that into a DenseElementsAttr.
   if (!tensor.is_contiguous())
     tensor = tensor.contiguous();
@@ -295,7 +296,7 @@ MlirAttribute torch_mlir::convertTensorToMlirElementsAttr(at::Tensor tensor,
   MlirType shapedType = mlirRankedTensorTypeGetChecked(
       loc, shape.size(), shape.data(), elementType, {nullptr});
   if (mlirTypeIsNull(shapedType)) {
-    throwUnsupportedTensorError();
+    throwUnsupportedTensorError(tensor);
   }
 
   // Import DenseElementsAttr data.
@@ -331,9 +332,61 @@ MlirAttribute torch_mlir::convertTensorToMlirElementsAttr(at::Tensor tensor,
     return mlirDenseElementsAttrBFloat16Get(
         shapedType, numElements, static_cast<const uint16_t *>(tensorData));
   default:
-    throwUnsupportedTensorError();
+    throwUnsupportedTensorError(tensor);
   }
   return {nullptr}; // Unreachable.
+}
+
+// XXX: Not Implemented Yet
+MlirAttribute torch_mlir::convertSparseCSRTensorToMlirElementsAttr(
+                at::Tensor tensor, MlirLocation loc) {
+  throwUnsupportedTensorError(tensor);
+  return {nullptr}; // Unreachable
+}
+
+// XXX: Experimental
+MlirAttribute torch_mlir::convertSparseCOOTensorToMlirElementsAttr(
+                at::Tensor tensor, MlirLocation loc) {
+  using at::ScalarType;
+
+  // Construct the ShapedType.
+  MlirType elementType = getMlirTypeForTorchScalarType(
+      loc, c10::toUnderlying(tensor.scalar_type()));
+  std::vector<int64_t> shape(tensor.sizes().begin(), tensor.sizes().end());
+  MlirType shapedType = mlirRankedTensorTypeGetChecked(
+      loc, shape.size(), shape.data(), elementType, {nullptr});
+  if (mlirTypeIsNull(shapedType)) {
+    throwUnsupportedTensorError(tensor);
+  }
+
+  // Sparse COO tensors are initialized using two dense attributes: one
+  // for the indicies (2-dimensional, Uint64), and one for the values
+  // (1-dimensional, arbitrary data type).
+  // Since these are just dense tensors, we can re-use the existing dense
+  // attribute value converters for convenience.
+
+  // COO tensors are allowed to have duplicate index entries upon declaration.
+  // This isn't really legal, so we have to coalesce it to clean these up.
+  tensor = tensor.coalesce();
+
+  at::Tensor indicesTensor = tensor.indices();
+  MlirAttribute denseIndices =
+    convertTensorToMlirElementsAttr(indicesTensor, loc);
+  if (mlirAttributeIsNull(denseIndices))
+    throwUnsupportedTensorError(tensor);
+
+  at::Tensor valuesTensor = tensor.values();
+  MlirAttribute denseValues =
+    convertTensorToMlirElementsAttr(valuesTensor, loc);
+  if (mlirAttributeIsNull(denseValues))
+    throwUnsupportedTensorError(tensor);
+
+  MlirAttribute sparseElements = mlirSparseElementsAttribute(
+    shapedType, denseIndices, denseValues);
+  if (mlirAttributeIsNull(sparseElements))
+    throwUnsupportedTensorError(tensor);
+
+  return sparseElements;
 }
 
 MlirAttribute torch_mlir::importAttribute(MlirLocation loc,
