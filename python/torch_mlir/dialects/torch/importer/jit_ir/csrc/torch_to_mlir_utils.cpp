@@ -360,7 +360,7 @@ MlirAttribute torch_mlir::convertSparseCOOTensorToMlirElementsAttr(
   }
 
   // Sparse COO tensors are initialized using two dense attributes: one
-  // for the indicies (2-dimensional, Uint64), and one for the values
+  // for the indices (2-dimensional, Uint64), and one for the values
   // (1-dimensional, arbitrary data type).
   // Since these are just dense tensors, we can re-use the existing dense
   // attribute value converters for convenience.
@@ -369,11 +369,47 @@ MlirAttribute torch_mlir::convertSparseCOOTensorToMlirElementsAttr(
   // This isn't really legal, so we have to coalesce it to clean these up.
   tensor = tensor.coalesce();
 
-  at::Tensor indicesTensor = tensor.indices();
-  MlirAttribute denseIndices =
-    convertTensorToMlirElementsAttr(indicesTensor, loc);
-  if (mlirAttributeIsNull(denseIndices))
-    throwUnsupportedTensorError(tensor);
+  // Unfortunately PyTorch's indices are a tensor of row and column tensors
+  // with integer dtype. MLIR expects a tensor of uint64 coordinates.
+  // So we need an extra transpose and, layer, a dtype conversion. This means
+  // we will need to do the dense attribute conversion manually (since
+  // PyTorch has no unsigned integer type that we can exploit in ATen).
+  at::Tensor indicesTensor = tensor.indices().transpose(0,1).contiguous();
+
+  if (indicesTensor.scalar_type() != ScalarType::Long) {
+    // ATen should take care of the conversion under normal circumstances.
+    throwUnsupportedTensorError(tensor); // Throw on the original tensor.
+    std::stringstream msg;
+    msg << "Sparse index tensors must have int64 dtype. Unsupported tensor: "
+        << tensor;
+    throw std::invalid_argument(msg.str());
+  }
+  // The element type of indicesShapedType must agree with the data fed
+  // to mlirDenseElementsAttrUInt64Get, so we override it here, despite
+  // the fact that the original PyTorch was a signed 64-bit value.
+  MlirType indicesElementType = mlirIntegerTypeUnsignedGet(
+                                  mlirLocationGetContext(loc), 64);
+  std::vector<int64_t> indicesShape(indicesTensor.sizes().begin(),
+                                  indicesTensor.sizes().end());
+  MlirType indicesShapedType = mlirRankedTensorTypeGetChecked(
+      loc, indicesShape.size(), indicesShape.data(), indicesElementType,
+      {nullptr});
+  if (mlirTypeIsNull(indicesShapedType)) {
+    throwUnsupportedTensorError(tensor); // Throw the original tensor.
+  }
+  MlirAttribute denseIndices;
+  auto numElements = indicesTensor.numel();
+  auto tensorData = indicesTensor.data_ptr();
+  if (indicesTensor.scalar_type() == ScalarType::Long) {
+    denseIndices = mlirDenseElementsAttrUInt64Get(
+        indicesShapedType, numElements,
+        static_cast<const uint64_t *>(tensorData));
+  } else {
+    throwUnsupportedTensorError(tensor); // Throw the original tensor.
+    std::stringstream msg;
+    msg << "Unsupported index datatype in tensor type: " << tensor;
+    throw std::invalid_argument(msg.str());
+  }
 
   at::Tensor valuesTensor = tensor.values();
   MlirAttribute denseValues =

@@ -15,7 +15,7 @@ class TestModule(torch.nn.Module):
     def __init__(self):
         super().__init__()
         # (0,0):1; (0,1):2; (2,2):3
-        values = torch.tensor([1,2,3])
+        values = torch.tensor([1,2,3], dtype=torch.float32)
         self.coo = torch.sparse_coo_tensor(
             torch.tensor([[0, 0, 2],
                           [0, 1, 2]]),
@@ -30,11 +30,11 @@ class TestModule(torch.nn.Module):
         #  values,
         #  dtype=torch.float32)
 
-# CHECK: %[[COO:.*]] = torch.tensor.literal(sparse<{{\[\[}}0, 0, 2], [0, 1, 2]], [1.000000e+00, 2.000000e+00, 3.000000e+00]> : tensor<3x3xf32>) : !torch.tensor<[3,3],f32>
-# FIXME # CHECK: %[[CSR:.*]] = torch.tensor.literal(sparse<{{\[\[}}0, 0, 2], [0, 1, 2]], [1.000000e+00, 2.000000e+00, 3.000000e+00]> : tensor<3x3xf32>) : !torch.tensor<[3,3],f32>
+# CHECK: %[[COO:.*]] = torch.tensor.literal(sparse<{{\[\[}}0, 0], [0, 1], [2, 2]], [1.000000e+00, 2.000000e+00, 3.000000e+00]> : tensor<3x3xf32>) : !torch.tensor<[3,3],f32>
+# FIXME: %[[CSR:.*]] = torch.tensor.literal(sparse<{{.*}}, [1.000000e+00, 2.000000e+00, 3.000000e+00]> : tensor<3x3xf32>) : !torch.tensor<[3,3],f32>
 # CHECK: %[[ROOT:.*]] = torch.nn_module  {
 # CHECK:   torch.slot "coo", %[[COO]] : !torch.tensor<[3,3],f32>
-# FIXME # CHECK:   torch.slot "csr", %[[CSR]] : !torch.tensor<[3,3],f32>
+# FIXME:   torch.slot "csr", %[[CSR]] : !torch.tensor<[3,3],f32>
 # CHECK: }
 
 
